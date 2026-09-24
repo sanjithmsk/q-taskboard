@@ -4,7 +4,7 @@ from rest_framework import status
 from django.db.models import Q
 from users.serializers import UserSerializer
 from .models import Project, Membership, Task
-from .serializers import ProjectDetailSerializer, TaskSerializer
+from .serializers import ProjectDetailSerializer, TaskSerializer, ProjectWriteSerializer, TaskWriteSerializer
 
 
 def _get_membership(user, project_id):
@@ -42,11 +42,15 @@ class ProjectListCreateView(APIView):
         return Response({'projects': projects})
 
     def post(self, request):
-        name = (request.data.get('name') or '').strip()
-        description = request.data.get('description') or None
-        if not name or len(name) > 120:
-            return Response({'error': 'invalid input'}, status=status.HTTP_400_BAD_REQUEST)
-        project = Project.objects.create(name=name, description=description, owner=request.user)
+        serializer = ProjectWriteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({'error': 'invalid input', 'details': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        data = serializer.validated_data
+        project = Project.objects.create(
+            name=data['name'],
+            description=data.get('description') or None,
+            owner=request.user,
+        )
         Membership.objects.create(user=request.user, project=project, role='admin')
         return Response(
             {'project': {'id': str(project.id), 'name': project.name}},
@@ -80,10 +84,15 @@ class ProjectDetailView(APIView):
             project = Project.objects.get(id=project_id)
         except Project.DoesNotExist:
             return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
-        if 'name' in request.data:
-            project.name = request.data['name'].strip()
-        if 'description' in request.data:
-            project.description = request.data['description'] or None
+
+        serializer = ProjectWriteSerializer(data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response({'error': 'invalid input', 'details': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        data = serializer.validated_data
+        if 'name' in data:
+            project.name = data['name']
+        if 'description' in data:
+            project.description = data['description'] or None
         project.save()
         return Response({'project': {'id': str(project.id), 'name': project.name}})
 
@@ -130,23 +139,21 @@ class TaskListCreateView(APIView):
         if not _can_edit_tasks(membership.role):
             return Response({'error': 'viewers cannot create tasks'}, status=status.HTTP_403_FORBIDDEN)
 
-        title = (request.data.get('title') or '').strip()
-        if not title:
-            return Response({'error': 'title is required'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = TaskWriteSerializer(data=request.data, context={'project_id': project_id})
+        if not serializer.is_valid():
+            return Response({'error': 'invalid input', 'details': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        data = serializer.validated_data
 
-        task_status = request.data.get('status', 'todo')
-        if task_status not in ('todo', 'in_progress', 'review', 'done'):
-            return Response({'error': 'invalid status'}, status=status.HTTP_400_BAD_REQUEST)
-
+        task_status = data.get('status', 'todo')
         last = Task.objects.filter(project_id=project_id, status=task_status).order_by('-position').first()
         position = (last.position + 1) if last else 0
 
         task = Task.objects.create(
             project_id=project_id,
-            title=title,
-            description=request.data.get('description') or None,
+            title=data['title'],
+            description=data.get('description') or None,
             status=task_status,
-            assignee_id=request.data.get('assigneeId') or None,
+            assignee_id=data.get('assigneeId'),
             created_by=request.user,
             position=position,
         )
@@ -167,17 +174,18 @@ class TaskDetailView(APIView):
         if not _can_edit_tasks(membership.role):
             return Response({'error': 'viewers cannot edit tasks'}, status=status.HTTP_403_FORBIDDEN)
 
-        if 'title' in request.data:
-            task.title = request.data['title'].strip()
-        if 'description' in request.data:
-            task.description = request.data['description'] or None
-        if 'status' in request.data:
-            new_status = request.data['status']
-            if new_status not in ('todo', 'in_progress', 'review', 'done'):
-                return Response({'error': 'invalid status'}, status=status.HTTP_400_BAD_REQUEST)
-            task.status = new_status
-        if 'assigneeId' in request.data:
-            task.assignee_id = request.data['assigneeId'] or None
+        serializer = TaskWriteSerializer(data=request.data, partial=True, context={'project_id': str(task.project_id)})
+        if not serializer.is_valid():
+            return Response({'error': 'invalid input', 'details': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        data = serializer.validated_data
+        if 'title' in data:
+            task.title = data['title']
+        if 'description' in data:
+            task.description = data['description'] or None
+        if 'status' in data:
+            task.status = data['status']
+        if 'assigneeId' in data:
+            task.assignee_id = data['assigneeId']
         task.save()
 
         task_data = TaskSerializer(Task.objects.select_related('assignee').get(id=task_id)).data

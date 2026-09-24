@@ -26,6 +26,33 @@ class TaskSerializer(serializers.ModelSerializer):
         ]
 
 
+class ProjectWriteSerializer(serializers.Serializer):
+    """Validates create/update input for projects. Use partial=True for PATCH."""
+    name = serializers.CharField(max_length=120, allow_blank=False)
+    description = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+
+
+class TaskWriteSerializer(serializers.Serializer):
+    """Validates create/update input for tasks. Use partial=True for PATCH.
+
+    `assigneeId` is validated to be a current member of the task's project
+    (passed via context), which also prevents cross-project assignment and the
+    FK-violation 500 on a non-existent user id.
+    """
+    title = serializers.CharField(max_length=500, allow_blank=False)
+    description = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    status = serializers.ChoiceField(choices=[c[0] for c in Task.STATUS_CHOICES], required=False)
+    assigneeId = serializers.UUIDField(required=False, allow_null=True)
+
+    def validate_assigneeId(self, value):
+        if value is None:
+            return None
+        project_id = self.context.get('project_id')
+        if not Membership.objects.filter(project_id=project_id, user_id=value).exists():
+            raise serializers.ValidationError('assignee must be a member of this project')
+        return value
+
+
 class MembershipSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
 
