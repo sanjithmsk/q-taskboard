@@ -108,3 +108,9 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_TZ = True
+
+# Airtable export (see projects/airtable_client.py). Empty by default; set these
+# in the environment to enable the real export.
+AIRTABLE_API_KEY = os.environ.get('AIRTABLE_API_KEY', '')
+AIRTABLE_BASE_ID = os.environ.get('AIRTABLE_BASE_ID', '')
+AIRTABLE_TABLE_NAME = os.environ.get('AIRTABLE_TABLE_NAME', 'Tasks')

@@ -30,7 +30,8 @@ export function clearSession() {
 }
 
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken();
+  // Login/register exchange credentials for a token; an old token has no business there.
+  const token = path.startsWith("/api/auth/") ? null : getToken();
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -40,7 +41,16 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   const data = text ? JSON.parse(text) : null;
 
   if (!res.ok) {
-    const message = (data && (data.error as string)) || `request failed (${res.status})`;
+    // A 401 on a request that carried a token means the session is dead (expired, or its
+    // user was deleted, e.g. by a reseed). Drop it and go sign in again instead of
+    // leaving every page failing.
+    if (res.status === 401 && token) {
+      clearSession();
+      window.location.assign("/login");
+    }
+    const message =
+      (data && ((data.error as string) || (data.detail as string))) ||
+      `request failed (${res.status})`;
     throw new Error(message);
   }
   return data as T;

@@ -11,7 +11,13 @@ def _token_for_user(user):
     return str(RefreshToken.for_user(user).access_token)
 
 
+# Register/login exchange credentials for a token, so they must not try to
+# authenticate the request. AllowAny alone is not enough: DRF still runs
+# JWTAuthentication on any Bearer header, and a stale token (expired, or for a
+# user deleted by `manage.py seed`) raises 401 before the view ever runs, which
+# locks the client out of signing in again.
 class RegisterView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
     throttle_scope = 'auth'
 
@@ -37,6 +43,7 @@ class RegisterView(APIView):
 
 
 class LoginView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
     throttle_scope = 'auth'
 

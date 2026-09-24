@@ -55,10 +55,33 @@ export default function ProjectPage() {
     onError: (err) => setError(err instanceof Error ? err.message : "create failed"),
   });
 
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
+  type ExportSummary = {
+    total: number;
+    created: number;
+    updated: number;
+    failed: number;
+    errors: { taskId: string; title: string; error: string }[];
+  };
+  const exportToAirtable = useMutation({
+    mutationFn: () =>
+      apiFetch<{ export: ExportSummary }>(`/api/projects/${id}/export`, { method: "POST" }),
+    onSuccess: (res) => {
+      const s = res.export;
+      setExportMsg(
+        `Exported to Airtable: ${s.created} created, ${s.updated} updated` +
+          (s.failed ? `, ${s.failed} failed` : "") +
+          ` (of ${s.total}).`,
+      );
+    },
+    onError: (err) => setExportMsg(err instanceof Error ? err.message : "export failed"),
+  });
+
   const project = data?.project;
   const currentUserId = getStoredUser()?.id;
   const currentRole: Role =
     project?.memberships.find((m) => m.user.id === currentUserId)?.role ?? "viewer";
+  const canExport = currentRole === "admin" || currentRole === "member";
   const tasksByStatus: Record<TaskStatus, ApiTask[]> = {
     todo: [],
     in_progress: [],
@@ -104,6 +127,25 @@ export default function ProjectPage() {
                   owner: {project.owner.name} · {project.memberships.length} members
                 </p>
               </div>
+              {canExport && (
+                <div className="text-right">
+                  <button
+                    onClick={() => {
+                      setExportMsg(null);
+                      exportToAirtable.mutate();
+                    }}
+                    disabled={exportToAirtable.isPending}
+                    className="text-sm px-4 py-2 rounded-md border border-border hover:border-muted disabled:opacity-50"
+                  >
+                    {exportToAirtable.isPending ? "exporting…" : "export to Airtable"}
+                  </button>
+                  {exportMsg && (
+                    <p className="text-xs text-muted mt-2 max-w-xs" role="status">
+                      {exportMsg}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <section className="bg-surface border border-border rounded-lg p-4 mb-6">

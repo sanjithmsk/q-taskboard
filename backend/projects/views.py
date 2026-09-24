@@ -10,6 +10,7 @@ from .serializers import (
     ProjectDetailSerializer, TaskSerializer, ProjectWriteSerializer, TaskWriteSerializer,
     CommentSerializer, CommentWriteSerializer, ActivitySerializer,
 )
+from .airtable_client import build_gateway_from_settings, run_export, AirtableConfigError
 
 
 def _get_membership(user, project_id):
@@ -283,6 +284,9 @@ class MemberAddView(APIView):
 
 
 class ExportView(APIView):
+    """Bulk-export a project's tasks to Airtable. Members (admin/member) only.
+    Idempotent and resilient — see projects/airtable_client.run_export."""
+
     def post(self, request, project_id):
         membership = _get_membership(request.user, project_id)
         if not membership:
@@ -290,8 +294,26 @@ class ExportView(APIView):
         if not _can_edit_tasks(membership.role):
             return Response({'error': 'only admins and members can export'}, status=status.HTTP_403_FORBIDDEN)
 
-        tasks = Task.objects.filter(project_id=project_id).select_related('assignee', 'created_by')
-        return Response({'exported': 0, 'tasks': TaskSerializer(tasks, many=True).data})
+        tasks = list(
+            Task.objects
+            .filter(project_id=project_id)
+            .select_related('assignee')
+            .order_by('status', 'position')
+        )
+
+        try:
+            gateway = build_gateway_from_settings()
+        except AirtableConfigError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        try:
+            summary = run_export(tasks, gateway)
+        except Exception as exc:  # noqa: BLE001 - couldn't even read existing rows
+            return Response({'error': f'airtable export failed: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        # 207 when some records failed but others succeeded (still a 2xx).
+        http_status = status.HTTP_200_OK if summary['failed'] == 0 else status.HTTP_207_MULTI_STATUS
+        return Response({'export': summary}, status=http_status)
 
 
 class CommentListCreateView(APIView):
