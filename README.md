@@ -4,6 +4,16 @@ A fullstack project management app for managing projects, tasks, and team member
 
 **Tech Stack:** React 18 + Vite + TypeScript (frontend) · Django 5 + Django REST Framework + SimpleJWT (backend) · PostgreSQL 16
 
+## 📹 Screen recording
+
+Narrated walkthrough (terminal visible throughout): **https://www.loom.com/share/dddbf514023f45b2bc0c76038cf805b3** (also in [RECORDING.md](RECORDING.md)).
+
+## Submission artifacts
+
+- [REVIEW.md](REVIEW.md) — code review with before/after bug proof from the running app
+- [TERMINAL_LOG.md](TERMINAL_LOG.md) — setup → tests → bug/fix proof → Part 3 demos → final tests
+- [DESIGN_NOTES.md](DESIGN_NOTES.md) — Airtable export design (idempotency, retry, rollback) and setup
+
 ## Quick Setup (Docker — Recommended)
 
 ```bash
