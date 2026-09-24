@@ -60,3 +60,44 @@ class Task(models.Model):
     class Meta:
         db_table = 'tasks'
         indexes = [models.Index(fields=['project', 'status'])]
+
+
+class Comment(models.Model):
+    """Append-only comment on a task. There is intentionally no edit/delete path
+    (see views/urls) — comments are part of the engagement audit trail."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='comments')
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='comments')
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'comments'
+        ordering = ['created_at']  # chronological (oldest first)
+        indexes = [models.Index(fields=['task', 'created_at'])]
+
+
+class Activity(models.Model):
+    """Immutable audit record of a meaningful change within a project. Task-related
+    context is duplicated into `metadata` so the feed survives task deletion."""
+    ACTION_CHOICES = [
+        ('task_created', 'Task created'),
+        ('status_changed', 'Status changed'),
+        ('assignee_changed', 'Assignee changed'),
+        ('comment_added', 'Comment added'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='activities')
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='activities')
+    action = models.CharField(max_length=32, choices=ACTION_CHOICES)
+    task = models.ForeignKey(
+        Task, on_delete=models.SET_NULL, null=True, blank=True, related_name='activities',
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'activities'
+        ordering = ['-created_at']  # most recent first
+        indexes = [models.Index(fields=['project', 'created_at'])]

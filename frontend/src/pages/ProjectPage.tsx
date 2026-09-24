@@ -1,12 +1,21 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, getToken } from "@/lib/api-client";
+import { apiFetch, getToken, getStoredUser } from "@/lib/api-client";
 import { Header } from "@/components/Header";
 import { StatusColumn } from "@/components/StatusColumn";
 import { TaskDetail } from "@/components/TaskDetail";
-import type { ApiProjectDetail, ApiTask, TaskStatus } from "@/types";
+import type { ApiActivity, ApiProjectDetail, ApiTask, Role, TaskStatus } from "@/types";
 import { STATUS_ORDER } from "@/types";
+
+function formatTime(iso: string) {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 export default function ProjectPage() {
   const navigate = useNavigate();
@@ -27,6 +36,11 @@ export default function ProjectPage() {
     queryFn: () => apiFetch<{ project: ApiProjectDetail }>(`/api/projects/${id}`),
   });
 
+  const activities = useQuery({
+    queryKey: ["activities", id],
+    queryFn: () => apiFetch<{ activities: ApiActivity[] }>(`/api/projects/${id}/activities`),
+  });
+
   const createTask = useMutation({
     mutationFn: (input: { title: string; status: TaskStatus }) =>
       apiFetch<{ task: ApiTask }>(`/api/projects/${id}/tasks`, {
@@ -36,11 +50,15 @@ export default function ProjectPage() {
     onSuccess: () => {
       setNewTitle("");
       queryClient.invalidateQueries({ queryKey: ["project", id] });
+      queryClient.invalidateQueries({ queryKey: ["activities", id] });
     },
     onError: (err) => setError(err instanceof Error ? err.message : "create failed"),
   });
 
   const project = data?.project;
+  const currentUserId = getStoredUser()?.id;
+  const currentRole: Role =
+    project?.memberships.find((m) => m.user.id === currentUserId)?.role ?? "viewer";
   const tasksByStatus: Record<TaskStatus, ApiTask[]> = {
     todo: [],
     in_progress: [],
@@ -159,6 +177,29 @@ export default function ProjectPage() {
                 ))}
               </ul>
             </section>
+
+            <section className="mt-10">
+              <h2 className="text-sm font-medium mb-3">activity</h2>
+              {activities.isLoading && <p className="text-muted text-sm">loading…</p>}
+              {activities.data && activities.data.activities.length === 0 && (
+                <p className="text-muted text-sm">no activity yet</p>
+              )}
+              {activities.data && activities.data.activities.length > 0 && (
+                <ul className="bg-surface border border-border rounded-lg divide-y divide-border">
+                  {activities.data.activities.map((a) => (
+                    <li
+                      key={a.id}
+                      className="px-4 py-3 flex items-center justify-between gap-3 text-sm"
+                    >
+                      <span>{a.summary}</span>
+                      <span className="text-xs text-muted whitespace-nowrap">
+                        {formatTime(a.created_at)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
           </>
         )}
       </main>
@@ -168,6 +209,7 @@ export default function ProjectPage() {
           task={activeTask}
           projectId={id!}
           members={project.memberships}
+          role={currentRole}
           onClose={() => setActiveTask(null)}
         />
       )}

@@ -1,10 +1,15 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from django.db import transaction
 from django.db.models import Q
+from users.models import User
 from users.serializers import UserSerializer
-from .models import Project, Membership, Task
-from .serializers import ProjectDetailSerializer, TaskSerializer, ProjectWriteSerializer, TaskWriteSerializer
+from .models import Project, Membership, Task, Comment, Activity
+from .serializers import (
+    ProjectDetailSerializer, TaskSerializer, ProjectWriteSerializer, TaskWriteSerializer,
+    CommentSerializer, CommentWriteSerializer, ActivitySerializer,
+)
 
 
 def _get_membership(user, project_id):
@@ -16,6 +21,18 @@ def _get_membership(user, project_id):
 
 def _can_edit_tasks(role):
     return role in ('admin', 'member')
+
+
+def _record_activity(project_id, actor, action, task=None, metadata=None):
+    """Write one audit record. Call inside the same transaction.atomic() block as
+    the change it records so the two commit or roll back together (see DESIGN_NOTES.md)."""
+    Activity.objects.create(
+        project_id=project_id,
+        actor=actor,
+        action=action,
+        task=task,
+        metadata=metadata or {},
+    )
 
 
 class ProjectListCreateView(APIView):
@@ -148,15 +165,20 @@ class TaskListCreateView(APIView):
         last = Task.objects.filter(project_id=project_id, status=task_status).order_by('-position').first()
         position = (last.position + 1) if last else 0
 
-        task = Task.objects.create(
-            project_id=project_id,
-            title=data['title'],
-            description=data.get('description') or None,
-            status=task_status,
-            assignee_id=data.get('assigneeId'),
-            created_by=request.user,
-            position=position,
-        )
+        with transaction.atomic():
+            task = Task.objects.create(
+                project_id=project_id,
+                title=data['title'],
+                description=data.get('description') or None,
+                status=task_status,
+                assignee_id=data.get('assigneeId'),
+                created_by=request.user,
+                position=position,
+            )
+            _record_activity(
+                project_id, request.user, 'task_created',
+                task=task, metadata={'title': task.title},
+            )
         task_data = TaskSerializer(Task.objects.select_related('assignee').get(id=task.id)).data
         return Response({'task': task_data}, status=status.HTTP_201_CREATED)
 
@@ -178,6 +200,9 @@ class TaskDetailView(APIView):
         if not serializer.is_valid():
             return Response({'error': 'invalid input', 'details': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
         data = serializer.validated_data
+        old_status = task.status
+        old_assignee_id = task.assignee_id
+
         if 'title' in data:
             task.title = data['title']
         if 'description' in data:
@@ -186,7 +211,26 @@ class TaskDetailView(APIView):
             task.status = data['status']
         if 'assigneeId' in data:
             task.assignee_id = data['assigneeId']
-        task.save()
+
+        status_changed = 'status' in data and task.status != old_status
+        assignee_changed = 'assigneeId' in data and task.assignee_id != old_assignee_id
+
+        with transaction.atomic():
+            task.save()
+            if status_changed:
+                _record_activity(
+                    task.project_id, request.user, 'status_changed', task=task,
+                    metadata={'title': task.title, 'from': old_status, 'to': task.status},
+                )
+            if assignee_changed:
+                assignee_name = None
+                if task.assignee_id:
+                    assignee = User.objects.filter(id=task.assignee_id).first()
+                    assignee_name = assignee.name if assignee else None
+                _record_activity(
+                    task.project_id, request.user, 'assignee_changed', task=task,
+                    metadata={'title': task.title, 'assignee': assignee_name},
+                )
 
         task_data = TaskSerializer(Task.objects.select_related('assignee').get(id=task_id)).data
         return Response({'task': task_data})
@@ -248,3 +292,61 @@ class ExportView(APIView):
 
         tasks = Task.objects.filter(project_id=project_id).select_related('assignee', 'created_by')
         return Response({'exported': 0, 'tasks': TaskSerializer(tasks, many=True).data})
+
+
+class CommentListCreateView(APIView):
+    """Append-only comment thread on a task. Any project member may read;
+    admins/members may post; viewers are read-only. No edit/delete path exists."""
+
+    def get(self, request, task_id):
+        try:
+            task = Task.objects.select_related('project').get(id=task_id)
+        except Task.DoesNotExist:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+        if not _get_membership(request.user, str(task.project_id)):
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        comments = Comment.objects.filter(task=task).select_related('author').order_by('created_at')
+        return Response({'comments': CommentSerializer(comments, many=True).data})
+
+    def post(self, request, task_id):
+        try:
+            task = Task.objects.select_related('project').get(id=task_id)
+        except Task.DoesNotExist:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = _get_membership(request.user, str(task.project_id))
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_edit_tasks(membership.role):
+            return Response({'error': 'viewers cannot post comments'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = CommentWriteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({'error': 'invalid input', 'details': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            comment = Comment.objects.create(
+                task=task, author=request.user, body=serializer.validated_data['body'],
+            )
+            _record_activity(
+                task.project_id, request.user, 'comment_added',
+                task=task, metadata={'title': task.title},
+            )
+        return Response({'comment': CommentSerializer(comment).data}, status=status.HTTP_201_CREATED)
+
+
+class ActivityListView(APIView):
+    """Chronological (most-recent-first) audit feed for a project. Members only."""
+
+    def get(self, request, project_id):
+        if not _get_membership(request.user, project_id):
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        activities = (
+            Activity.objects
+            .filter(project_id=project_id)
+            .select_related('actor')
+            .order_by('-created_at')[:50]
+        )
+        return Response({'activities': ActivitySerializer(activities, many=True).data})

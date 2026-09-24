@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from users.serializers import UserSerializer
-from .models import Project, Membership, Task
+from .models import Project, Membership, Task, Comment, Activity
 
 
 class TaskSerializer(serializers.ModelSerializer):
@@ -59,6 +59,42 @@ class MembershipSerializer(serializers.ModelSerializer):
     class Meta:
         model = Membership
         fields = ['id', 'role', 'user']
+
+
+class CommentSerializer(serializers.ModelSerializer):
+    author = UserSerializer(read_only=True)
+
+    class Meta:
+        model = Comment
+        fields = ['id', 'body', 'author', 'created_at']
+
+
+class CommentWriteSerializer(serializers.Serializer):
+    body = serializers.CharField(allow_blank=False, max_length=5000)
+
+
+class ActivitySerializer(serializers.ModelSerializer):
+    actor = UserSerializer(read_only=True)
+    summary = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Activity
+        fields = ['id', 'action', 'actor', 'task_id', 'metadata', 'summary', 'created_at']
+
+    def get_summary(self, obj):
+        who = obj.actor.name if obj.actor else 'Someone'
+        meta = obj.metadata or {}
+        title = meta.get('title', 'a task')
+        if obj.action == 'task_created':
+            return f'{who} created task "{title}"'
+        if obj.action == 'status_changed':
+            return f'{who} moved "{title}" from {meta.get("from", "?")} to {meta.get("to", "?")}'
+        if obj.action == 'assignee_changed':
+            assignee = meta.get('assignee')
+            return f'{who} assigned "{title}" to {assignee}' if assignee else f'{who} unassigned "{title}"'
+        if obj.action == 'comment_added':
+            return f'{who} commented on "{title}"'
+        return f'{who} updated the project'
 
 
 class ProjectDetailSerializer(serializers.ModelSerializer):
